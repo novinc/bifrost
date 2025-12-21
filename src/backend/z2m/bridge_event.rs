@@ -111,6 +111,15 @@ impl Z2mBackend {
                     dev.model_id.as_deref().unwrap_or("<unknown model>")
                 );
                 self.add_light(dev, exp).await?;
+            } else if dev.expose_switch().is_some() {
+                log::info!(
+                    "[{}] Adding switch if it is a plug {:?}: [{}] ({})",
+                    self.name,
+                    dev.ieee_address,
+                    dev.friendly_name,
+                    dev.model_id.as_deref().unwrap_or("<unknown model>")
+                );
+                self.add_if_plug(dev).await?;
             } else {
                 log::debug!(
                     "[{}] Ignoring unsupported device {}",
@@ -128,7 +137,7 @@ impl Z2mBackend {
                     dev.friendly_name,
                     dev.model_id.as_deref().unwrap_or("<unknown model>")
                 );
-                self.add_switch(dev).await?;
+                self.add_button(dev).await?;
             }
             */
         }
@@ -169,8 +178,8 @@ impl Z2mBackend {
             let device = lock.get::<Light>(light)?.clone();
 
             let device_link = device.owner;
-            if let Some(room) = self.map.get(&change.group) {
-                let room_link = lock.get::<GroupedLight>(room)?.owner;
+            if let Some(grouped_light) = self.map.get(&change.group) {
+                let room_link = lock.get::<GroupedLight>(grouped_light)?.owner;
                 let exists = lock
                     .get::<Room>(&room_link)?
                     .children

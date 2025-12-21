@@ -269,10 +269,22 @@ impl Z2mBackend {
         link: &ResourceLink,
         upd: &GroupedLightUpdate,
     ) -> ApiResult<()> {
-        let room = self.state.lock().await.get::<GroupedLight>(link)?.owner;
+        let res = self.state.lock().await;
+        let grouped_light = res.get::<GroupedLight>(link)?;
+        let room = grouped_light.owner;
 
         if let Some(topic) = self.rmap.get(&room) {
             z2mws.send_update(topic, &upd.into()).await?;
+        }
+
+        // Optional plug-only group.
+        if let Some(AuxData {
+            topic: Some(topic), ..
+        }) = res.aux_get(link).ok()
+        {
+            // Plugs only support on/off.
+            let basic_update = DeviceUpdate::new().with_state(upd.on.map(|on| on.on));
+            z2mws.send_update(topic, &basic_update).await?;
         }
 
         Ok(())

@@ -511,6 +511,17 @@ impl Device {
     }
 
     #[must_use]
+    pub fn expose_switch(&self) -> Option<&ExposeSwitch> {
+        self.exposes().iter().find_map(|exp| {
+            if let Expose::Switch(switch) = exp {
+                Some(switch)
+            } else {
+                None
+            }
+        })
+    }
+
+    #[must_use]
     pub fn expose_action(&self) -> bool {
         self.exposes().iter().any(|exp| {
             if let Expose::Enum(ExposeEnum { base, .. }) = exp {
@@ -682,6 +693,16 @@ pub struct ExposeNumeric {
 pub struct ExposeSwitch {
     #[serde(flatten)]
     pub base: ExposeBase,
+}
+
+impl ExposeSwitch {
+    #[must_use]
+    pub fn feature(&self, name: &str) -> Option<&Expose> {
+        self.base
+            .features
+            .iter()
+            .find(|exp| exp.name() == Some(name))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

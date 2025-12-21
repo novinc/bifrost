@@ -149,6 +149,47 @@ impl Light {
         }
     }
 
+    pub fn new_plug(owner: ResourceLink, metadata: LightMetadata) -> Self {
+        Self {
+            alert: Some(LightAlert {
+                action_values: BTreeSet::new(),
+            }),
+            color: None,
+            color_temperature: None,
+            color_temperature_delta: None,
+            dimming: None,
+            dimming_delta: None,
+            dynamics: None,
+            effects: None,
+            effects_v2: None,
+            service_id: Some(0),
+            gradient: None,
+            identify: Identify {},
+            timed_effects: None,
+            mode: LightMode::Normal,
+            on: On { on: true },
+            product_data: Some(LightProductData {
+                function: Some(LightFunction::Decorative),
+            }),
+            metadata,
+            owner,
+            powerup: Some(LightPowerup {
+                preset: LightPowerupPreset::LastOnState,
+                configured: true,
+                on: LightPowerupOn::None,
+                dimming: LightPowerupDimming::None,
+                color: LightPowerupColor::None,
+            }),
+            signaling: Some(LightSignaling {
+                signal_values: vec![
+                    LightSignal::NoSignal,
+                    LightSignal::OnOff,
+                ],
+                status: Value::Null,
+            }),
+        }
+    }
+
     #[must_use]
     pub fn as_dimming_opt(&self) -> Option<DimmingUpdate> {
         self.dimming.as_ref().map(|dim| DimmingUpdate {

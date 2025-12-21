@@ -42,6 +42,7 @@ pub struct Z2mConfig {
 pub struct Z2mServer {
     pub url: Url,
     pub group_prefix: Option<String>,
+    pub plug_map: Option<BTreeMap<String, String>>,
     pub disable_tls_verify: Option<bool>,
     pub streaming_fps: Option<NonZeroU32>,
 }

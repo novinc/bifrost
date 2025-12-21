@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use chrono::Utc;
 use maplit::btreeset;
@@ -53,6 +53,7 @@ impl Z2mBackend {
         };
 
         self.map.insert(name.to_string(), link_light);
+        self.map.insert(apidev.ieee_address.to_string(), link_light);
         self.rmap.insert(link_device, name.to_string());
         self.rmap.insert(link_light, name.to_string());
 
@@ -147,15 +148,70 @@ impl Z2mBackend {
         Ok(())
     }
 
-    pub async fn add_switch(&mut self, dev: &z2m::api::Device) -> ApiResult<()> {
-        let name = &dev.friendly_name;
+    pub async fn add_if_plug(&mut self, apidev: &z2m::api::Device) -> ApiResult<()> {
+        let product_data = DeviceProductData::guess_from_device(apidev);
 
-        let link_device = RType::Device.deterministic(&dev.ieee_address);
-        let link_button = RType::Button.deterministic(&dev.ieee_address);
-        let link_zbc = RType::ZigbeeConnectivity.deterministic(&dev.ieee_address);
+        // Only add plug devices as lights.
+        if product_data.product_archetype != DeviceArchetype::Plug {
+            log::info!(
+                "Skipping non-plug switch ({:?}): [{}] ({})",
+                product_data.product_archetype,
+                apidev.friendly_name,
+                product_data.model_id
+            );
+            return Ok(());
+        }
+
+        let name = &apidev.friendly_name;
+        let link_device = RType::Device.deterministic(&apidev.ieee_address);
+        let link_light = RType::Light.deterministic(&apidev.ieee_address);
+        let link_zigcon = RType::ZigbeeConnectivity.deterministic(&apidev.ieee_address);
+
+        let metadata = LightMetadata::new(product_data.product_archetype.clone(), name);
 
         let dev = hue::api::Device {
-            product_data: DeviceProductData::guess_from_device(dev),
+            product_data,
+            metadata: metadata.clone().into(),
+            services: btreeset![link_zigcon, link_light],
+            identify: Some(Stub),
+            usertest: None,
+        };
+
+        self.map.insert(name.to_string(), link_light);
+        self.map.insert(apidev.ieee_address.to_string(), link_light);
+        self.rmap.insert(link_device, name.to_string());
+        self.rmap.insert(link_light, name.to_string());
+
+        // Plugs are basic lights with only on/off support.
+        let light = Light::new_plug(link_device, metadata);
+
+        let zigcon = ZigbeeConnectivity {
+            channel: None,
+            extended_pan_id: None,
+            mac_address: apidev.ieee_address.to_string(),
+            owner: link_device,
+            status: ZigbeeConnectivityStatus::Connected,
+        };
+
+        let mut res = self.state.lock().await;
+        res.aux_set(&link_light, AuxData::new().with_topic(name));
+        res.add(&link_device, Resource::Device(dev))?;
+        res.add(&link_light, Resource::Light(light))?;
+        res.add(&link_zigcon, Resource::ZigbeeConnectivity(zigcon))?;
+        drop(res);
+
+        Ok(())
+    }
+
+    pub async fn add_button(&mut self, apidev: &z2m::api::Device) -> ApiResult<()> {
+        let name = &apidev.friendly_name;
+
+        let link_device = RType::Device.deterministic(&apidev.ieee_address);
+        let link_button = RType::Button.deterministic(&apidev.ieee_address);
+        let link_zbc = RType::ZigbeeConnectivity.deterministic(&apidev.ieee_address);
+
+        let dev = hue::api::Device {
+            product_data: DeviceProductData::guess_from_device(apidev),
             metadata: Metadata::new(DeviceArchetype::UnknownArchetype, "foo"),
             services: btreeset![link_button, link_zbc],
             identify: None,
@@ -163,6 +219,8 @@ impl Z2mBackend {
         };
 
         self.map.insert(name.to_string(), link_button);
+        self.map
+            .insert(apidev.ieee_address.to_string(), link_button);
         self.rmap.insert(link_button, name.to_string());
 
         let mut res = self.state.lock().await;
@@ -201,12 +259,8 @@ impl Z2mBackend {
 
     #[allow(clippy::too_many_lines)]
     pub async fn add_group(&mut self, grp: &z2m::api::Group) -> ApiResult<()> {
-        let room_name;
-
         if let Some(ref prefix) = self.server.group_prefix {
-            if let Some(name) = grp.friendly_name.strip_prefix(prefix) {
-                room_name = name;
-            } else {
+            if grp.friendly_name.strip_prefix(prefix).is_none() {
                 log::debug!(
                     "[{}] Ignoring room outside our prefix: {}",
                     self.name,
@@ -214,95 +268,154 @@ impl Z2mBackend {
                 );
                 return Ok(());
             }
-        } else {
-            room_name = &grp.friendly_name;
-        }
+        };
 
-        let link_room = RType::Room.deterministic(&grp.friendly_name);
-        let link_glight = RType::GroupedLight.deterministic((link_room.rid, grp.id));
+        // NOTE: Hue supports both actual lights, as well as plug based lights in a room/grouped light.
+        // But z2m groups don't work well when they have both lights and plugs in them. Basic commands to turn
+        // on a group that contains lights, will be converted internally in z2m to a moveToLevelWithOnOff command,
+        // which is ignored by plugs in the group. The solution is to isolate the plugs in their own group and
+        // link them to the main light based group, and generate two separate z2m messages for each group when
+        // we need to update the Group.
+        //
+        // What a combined group looks like:
+        //
+        // z2m:mqtt: Received MQTT message on 'zigbee2mqtt/living_and_kitchen/set' with data '{"state":"ON"}'
+        // z2m: Publishing 'set' 'state' to 'living_and_kitchen'
+        // zh:controller:group: Command 5 genLevelCtrl.moveToLevelWithOnOff({"level":254,"transtime":1})
+        //
+        // vs a plug-only group:
+        //
+        // z2m:mqtt: Received MQTT message on 'zigbee2mqtt/dining_room_lights/set' with data '{"state":"ON"}'
+        // z2m: Publishing 'set' 'state' to 'dining_room_lights'
+        // zh:controller:group: Command 6 genOnOff.on({})
 
-        let children = grp
+        // If we have an incoming group for plugs, map it to the non-plug group topic.
+        let (plug_group, topic) = match &self.server.plug_map {
+            Some(plug_map) => plug_map
+                .get(&grp.friendly_name)
+                .map(|s| (true, s.as_str()))
+                .unwrap_or((false, grp.friendly_name.as_str())),
+            None => (false, grp.friendly_name.as_str()),
+        };
+
+        let stripped_topic = self
+            .server
+            .group_prefix
+            .as_ref()
+            .and_then(|prefix| topic.strip_prefix(prefix))
+            .unwrap_or(topic);
+
+        let prev_link_room = RType::Room.deterministic(&grp.friendly_name);
+        let prev_link_glight = RType::GroupedLight.deterministic((prev_link_room.rid, grp.id));
+
+        let link_room = RType::Room.deterministic(topic);
+        let link_glight = RType::GroupedLight.deterministic(link_room.rid);
+
+        let mut children = grp
             .members
             .iter()
             .map(|f| RType::Device.deterministic(&f.ieee_address))
             .collect();
 
-        let topic = grp.friendly_name.to_string();
-
         let mut res = self.state.lock().await;
 
-        let mut scenes_new = HashSet::new();
-
-        for scn in &grp.scenes {
-            let scene = Scene {
-                actions: vec![],
-                auto_dynamic: false,
-                group: link_room,
-                metadata: SceneMetadata {
-                    appdata: None,
-                    image: guess_scene_icon(&scn.name),
-                    name: scn.name.to_string(),
-                },
-                palette: json!({
-                    "color": [],
-                    "dimming": [],
-                    "color_temperature": [],
-                    "effects": [],
-                }),
-                speed: 0.5,
-                recall: SceneRecall {
-                    action: None,
-                    dimming: None,
-                    duration: None,
-                },
-                status: Some(SceneStatus {
-                    active: SceneActive::Inactive,
-                    last_recall: None,
-                }),
-            };
-
-            let link_scene = RType::Scene.deterministic((link_room.rid, scn.id));
-
-            res.aux_set(
-                &link_scene,
-                AuxData::new().with_topic(&topic).with_index(scn.id),
-            );
-
-            scenes_new.insert(link_scene.rid);
-            res.add(&link_scene, Resource::Scene(scene))?;
+        // The link uses different data to generate, delete old version.
+        if link_room != prev_link_room {
+            let _ = res.delete(&prev_link_room);
         }
 
-        if let Ok(room) = res.get::<Room>(&link_room) {
-            log::info!(
-                "[{}] {link_room:?} ({}) known, updating..",
-                self.name,
-                room.metadata.name
-            );
+        if link_glight != prev_link_glight {
+            let _ = res.delete(&prev_link_glight);
+        }
 
-            let scenes_old: HashSet<Uuid> =
-                HashSet::from_iter(res.get_scenes_for_room(&link_room.rid));
-
-            log::trace!("[{}] old scenes: {scenes_old:?}", self.name);
-            log::trace!("[{}] new scenes: {scenes_new:?}", self.name);
-            let gone = scenes_old.difference(&scenes_new);
-            log::trace!("[{}]   deleted: {gone:?}", self.name);
-            for uuid in gone {
-                log::debug!(
-                    "[{}] Deleting orphaned {uuid:?} in {link_room:?}",
-                    self.name
-                );
-                let _ = res.delete(&RType::Scene.link_to(*uuid));
-            }
+        // For plug groups we want to add aux data for their group so we can send it commands on the z2m websocket.
+        // Also ignore all scenes on plug groups to avoid conflicts with scenes in the main group.
+        if plug_group {
+            res.aux_set(&link_glight, AuxData::new().with_topic(&grp.friendly_name));
         } else {
-            log::debug!(
-                "[{}] {link_room:?} ({}) is new, adding..",
-                self.name,
-                room_name
-            );
+            let mut scenes_new = HashSet::new();
+
+            for scn in &grp.scenes {
+                let scene = Scene {
+                    actions: vec![],
+                    auto_dynamic: false,
+                    group: link_room,
+                    metadata: SceneMetadata {
+                        appdata: None,
+                        image: guess_scene_icon(&scn.name),
+                        name: scn.name.to_string(),
+                    },
+                    palette: json!({
+                        "color": [],
+                        "dimming": [],
+                        "color_temperature": [],
+                        "effects": [],
+                    }),
+                    speed: 0.5,
+                    recall: SceneRecall {
+                        action: None,
+                        dimming: None,
+                        duration: None,
+                    },
+                    status: Some(SceneStatus {
+                        active: SceneActive::Inactive,
+                        last_recall: None,
+                    }),
+                };
+                let link_scene = RType::Scene.deterministic((link_room.rid, scn.id));
+
+                res.aux_set(
+                    &link_scene,
+                    AuxData::new().with_topic(&topic).with_index(scn.id),
+                );
+
+                scenes_new.insert(link_scene.rid);
+                res.add(&link_scene, Resource::Scene(scene))?;
+            }
+
+            if let Ok(room) = res.get::<Room>(&link_room) {
+                log::info!(
+                    "[{}] {link_room:?} ({}) known, updating..",
+                    self.name,
+                    room.metadata.name
+                );
+
+                let scenes_old: HashSet<Uuid> =
+                    HashSet::from_iter(res.get_scenes_for_room(&link_room.rid));
+
+                log::trace!("[{}] old scenes: {scenes_old:?}", self.name);
+                log::trace!("[{}] new scenes: {scenes_new:?}", self.name);
+                let gone = scenes_old.difference(&scenes_new);
+                log::trace!("[{}]   deleted: {gone:?}", self.name);
+                for uuid in gone {
+                    log::debug!(
+                        "[{}] Deleting orphaned {uuid:?} in {link_room:?}",
+                        self.name
+                    );
+                    let _ = res.delete(&RType::Scene.link_to(*uuid));
+                }
+            } else {
+                log::debug!("[{}] {link_room:?} ({}) is new, adding..", self.name, topic);
+            }
         }
 
-        let mut metadata = RoomMetadata::new(RoomArchetype::Home, room_name);
-        if let Some(room_conf) = self.config.rooms.get(&topic) {
+        self.map.insert(grp.friendly_name.to_string(), link_glight);
+        self.map.insert(grp.id.to_string(), link_glight);
+
+        // If this is the second time this room has come in for rooms that have plug groups too,
+        // we want to just add the children from this extra group. This incoming group could be the main
+        // group or the plug group as its possible for either to have appeared first.
+        let update_result = res.update(&link_room.rid, |room: &mut Room| {
+            room.children.append(&mut children);
+        });
+
+        if update_result.is_ok() {
+            return Ok(());
+        }
+
+        // First time we have seen this room/group so add them here.
+        let mut metadata = RoomMetadata::new(RoomArchetype::Home, stripped_topic);
+        if let Some(room_conf) = self.config.rooms.get(topic) {
             if let Some(name) = &room_conf.name {
                 metadata.name = name.to_string();
             }
@@ -311,15 +424,8 @@ impl Z2mBackend {
             }
         }
 
-        let room = Room {
-            children,
-            metadata,
-            services: btreeset![link_glight],
-        };
-
-        self.map.insert(topic.clone(), link_glight);
-        self.rmap.insert(link_glight, topic.clone());
-        self.rmap.insert(link_room, topic.clone());
+        self.rmap.insert(link_glight, topic.to_string());
+        self.rmap.insert(link_room, topic.to_string());
 
         for id in &res.get_resource_ids_by_type(RType::BridgeHome) {
             res.update(id, |bh: &mut BridgeHome| {
@@ -327,10 +433,13 @@ impl Z2mBackend {
             })?;
         }
 
-        res.add(&link_room, Resource::Room(room))?;
-
+        let room = Room {
+            children,
+            metadata,
+            services: btreeset![link_glight],
+        };
         let glight = GroupedLight::new(link_room);
-
+        res.add(&link_room, Resource::Room(room))?;
         res.add(&link_glight, Resource::GroupedLight(glight))?;
         drop(res);
 

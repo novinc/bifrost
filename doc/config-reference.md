@@ -80,6 +80,13 @@ z2m:
     #
     url: ws://10.00.0.100:8080/api?token=your-secret-token
 
+    # A mapping of z2m groups that are for isolating plug based lights, to the main
+    # z2m group representing the room they are in. Ensure the mapping are unique,
+    # only 1 plug group can belong to a main group.
+    plug_map:
+      # The group "my-living-room-plugs" contain plugs for the room "my-living-room".
+      my-living-room-plugs: my-living-room
+
   other-with-tls:
     # This will work, but Bifrost will generate a warning that the url has been
     # adapted to include "/api?token=your-secret-token".

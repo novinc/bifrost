@@ -81,6 +81,13 @@ fn make_product_data() -> BTreeMap<&'static str, SimpleProductData<'static>> {
             product_archetype: UnknownArchetype,
             hardware_platform_type: Some("1144-0"),
         },
+
+        "3RSP02028BZ" => SPD {
+            manufacturer_name: "Third Reality, Inc",
+            product_name: "Zigbee / BLE smart plug with power",
+            product_archetype: Plug,
+            hardware_platform_type: None,
+        }
     }
 }
 

@@ -17,12 +17,11 @@ use svc::error::SvcError;
 use svc::template::ServiceTemplate;
 use svc::traits::{BoxDynService, Service};
 use thiserror::Error;
-use tokio::net::TcpStream;
 use tokio::select;
 use tokio::sync::broadcast::Receiver;
 use tokio::sync::{Mutex, mpsc};
 use tokio_tungstenite::{
-    Connector, MaybeTlsStream, WebSocketStream, connect_async_tls_with_config,
+    Connector, connect_async_tls_with_config,
 };
 
 use bifrost_api::backend::BackendRequest;
@@ -82,7 +81,6 @@ pub struct Z2mBackend {
     counter: u32,
     fps: u32,
     throttle: Throttle,
-    socket: Option<WebSocketStream<MaybeTlsStream<TcpStream>>>,
 
     // for sending delayed messages over the websocket
     message_rx: mpsc::UnboundedReceiver<(String, DeviceUpdate)>,
@@ -123,7 +121,6 @@ impl Z2mBackend {
             fps,
             message_rx,
             message_tx,
-            socket: None,
             counter: 0,
         })
     }
@@ -164,7 +161,6 @@ impl Service for Z2mBackend {
         // let's not include auth tokens in log output
         let sanitized_url = self.server.get_sanitized_url();
         let url = self.server.get_url();
-
         if url != self.server.url {
             log::info!(
                 "[{}] Rewrote url for compatibility with z2m 2.x.",
@@ -176,7 +172,12 @@ impl Service for Z2mBackend {
                 sanitized_url
             );
         }
+        Ok(())
+    }
 
+    async fn run(&mut self) -> ApiResult<()> {
+        let sanitized_url = self.server.get_sanitized_url();
+        let url = self.server.get_url();
         // if tls verification is disabled, build a TlsConnector that explicitly
         // does not check certificate validity. This is obviously neither safe
         // nor recommended.
@@ -195,32 +196,22 @@ impl Service for Z2mBackend {
         };
 
         log::info!("[{}] Connecting to {}", self.name, &sanitized_url);
-        match connect_async_tls_with_config(url.as_str(), None, false, connector.clone()).await {
-            Ok((socket, _)) => {
-                self.socket = Some(socket);
-                Ok(())
-            }
-            Err(err) => {
-                log::error!("[{}] Connect failed: {err:?}", self.name);
-                Err(err.into())
-            }
-        }
-    }
+        let socket =
+            match connect_async_tls_with_config(url.as_str(), None, false, connector.clone()).await
+            {
+                Ok((socket, _)) => socket,
+                Err(err) => {
+                    log::error!("[{}] Connect failed: {err:?}", self.name);
+                    return Err(err.into());
+                }
+            };
 
-    async fn run(&mut self) -> ApiResult<()> {
-        if let Some(socket) = self.socket.take() {
-            let z2m_socket = Z2mWebSocket::new(self.name.clone(), socket);
-            let mut chan = self.state.lock().await.backend_event_stream();
-            let res = self.event_loop(&mut chan, z2m_socket).await;
-            if let Err(err) = res {
-                log::error!("[{}] Event loop broke: {err}", self.name);
-            }
-        }
-        Ok(())
+        let z2m_socket = Z2mWebSocket::new(self.name.clone(), socket);
+        let mut chan = self.state.lock().await.backend_event_stream();
+        self.event_loop(&mut chan, z2m_socket).await
     }
 
     async fn stop(&mut self) -> ApiResult<()> {
-        self.socket.take();
         Ok(())
     }
 }

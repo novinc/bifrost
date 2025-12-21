@@ -47,6 +47,21 @@ pub struct Z2mServer {
     pub streaming_fps: Option<NonZeroU32>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+pub struct HomeAssistantConfig {
+    #[serde(flatten)]
+    pub servers: BTreeMap<String, HomeAssistantServer>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+pub struct HomeAssistantServer {
+    pub url: Url,
+    pub token: String,
+    pub group_prefix: Option<String>,
+    pub disable_tls_verify: Option<bool>,
+    pub streaming_fps: Option<NonZeroU32>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, Default, Eq, PartialEq)]
 pub struct RoomConfig {
     pub name: Option<String>,
@@ -57,6 +72,7 @@ pub struct RoomConfig {
 pub struct AppConfig {
     pub bridge: BridgeConfig,
     pub z2m: Z2mConfig,
+    pub homeassistant: Option<HomeAssistantConfig>,
     pub bifrost: BifrostConfig,
     #[serde(default)]
     pub rooms: BTreeMap<String, RoomConfig>,
@@ -111,6 +127,23 @@ impl Z2mServer {
     #[must_use]
     pub fn get_sanitized_url(&self) -> String {
         Self::sanitize_url(self.get_url().as_str())
+    }
+}
+
+impl HomeAssistantServer {
+    #[must_use]
+    pub fn get_url(&self) -> Url {
+        let mut url = self.url.clone();
+
+        // Add the "/api/websocket" path
+        if !url.path().ends_with("/api/websocket") {
+            if let Ok(mut path) = url.path_segments_mut() {
+                path.push("api");
+                path.push("websocket");
+            }
+        }
+
+        url
     }
 }
 

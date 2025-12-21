@@ -234,6 +234,7 @@ dependencies = [
  "der",
  "ecdsa",
  "futures",
+ "ha",
  "hex",
  "hue",
  "hyper",
@@ -885,6 +886,15 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "ha"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
 ]
 
 [[package]]

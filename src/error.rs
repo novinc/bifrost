@@ -172,6 +172,16 @@ pub enum ApiError {
 
     #[error("Invalid zigbee message")]
     ZigbeeMessageError,
+
+    // Home Assistant errors
+    #[error("Unexpected eof on home assistant socket")]
+    UnexpectedHaEof,
+
+    #[error("Unexpected home assistant message: {0:?}")]
+    UnexpectedHaReply(tokio_tungstenite::tungstenite::Message),
+
+    #[error("Failed to auhenticate home assistant socket")]
+    HomeAssistantAuthenticateFailed,
 }
 
 impl From<SvcError> for ApiError {

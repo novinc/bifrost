@@ -34,6 +34,11 @@ Hue-specific frames.
 Rust code for interfacing with Zigbee2MQTT. Serializing and deserializing
 support for z2m messages.
 
+## `ha`: Home Assistant interface
+
+Rust code for interfacing with Home Assistant. Serializing and deserializing
+support for messages.
+
 ## `svc`: Service management
 
 Crate to manage, control and communicate with running "services".

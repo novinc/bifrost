@@ -1,6 +1,7 @@
 bifrost:
   # Override the default path to the one used in the docker image
   cert_file: "certs/cert.pem"
+  state_file: "data/state.yaml"
 
 bridge:
   name: Bifrost

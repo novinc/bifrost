@@ -8,3 +8,4 @@ services:
       # If you followed the guide on our readme, these paths work out of the box
       - ./config.yaml:/app/config.yaml
       - ./certs:/app/certs
+      - ./data:/app/data

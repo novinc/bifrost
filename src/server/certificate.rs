@@ -111,7 +111,7 @@ pub fn generate(secret_key: &p256::SecretKey, mac: MacAddress) -> ApiResult<Cert
     /* Authority Key Identifier extension */
     let mut aki = pkix::AuthorityKeyIdentifier::try_from(spki.clone())?;
     aki.key_identifier = Some(OctetString::new(
-        Sha1::digest(spki.subject_public_key.raw_bytes()).as_slice(),
+        Sha1::digest(spki.subject_public_key.raw_bytes()).iter().as_slice(),
     )?);
     aki.authority_cert_issuer = Some(vec![GeneralName::DirectoryName(issuer)]);
     aki.authority_cert_serial_number = Some(serial_number);
